@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Kubernetes manifests
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary k8s/
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t visits-web:ci app/
+      - name: Smoke test (app starts and fails readiness without Redis)
+        run: |
+          docker run -d --name web -p 8080:8080 visits-web:ci
+          sleep 5
+          curl -fsS localhost:8080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/readyz)" = "503"
