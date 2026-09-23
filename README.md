@@ -1,8 +1,8 @@
 # k8s-multi-container-app
 
-Small lab for getting hands-on with Kubernetes on Minikube: a Flask app (3 replicas) that counts visits in Redis. Redis stores its data on a PVC, and traffic comes in through the NGINX ingress.
+A Flask app (3 replicas) that counts visits in Redis, running on Kubernetes (Minikube). Redis stores its data on a PVC, and traffic comes in through the NGINX ingress.
 
-The app itself isn't the point. I wanted something with a stateful piece and a stateless piece so I could break things and see how Kubernetes reacts.
+It's built around a stateless tier and a stateful tier to show how Kubernetes handles failures, probes and rollouts.
 
 ![ci](https://github.com/sukeshavula/k8s-multi-container-app/actions/workflows/ci.yml/badge.svg)
 
@@ -29,7 +29,7 @@ curl http://visits.local/
 
 On Windows with the Docker driver, `minikube ip` isn't reachable. Run `minikube tunnel` and map `127.0.0.1 visits.local` in `C:\Windows\System32\drivers\etc\hosts` instead.
 
-## Things I'm testing
+## Failure scenarios
 
 **Does the count survive Redis being killed?**
 ```bash
@@ -52,10 +52,6 @@ kubectl -n visits scale deploy redis --replicas=1
 **Rollout with no dropped requests:** `kubectl rollout restart deploy/web` with a curl loop running. `maxUnavailable: 0` should mean no failures.
 
 Also: `Recreate` on the Redis deployment is intentional. The PVC is ReadWriteOnce, so a rolling update would leave the new pod stuck waiting for the volume.
-
-## Notes
-
-Results of the tests above get written up here as I run them.
 
 ## TODO
 
