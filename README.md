@@ -1,95 +1,64 @@
 # k8s-multi-container-app
 
-A two-tier app on Kubernetes: a Flask web service (3 replicas) that counts visits in Redis, which keeps its data on a PersistentVolume. Traffic comes in through an NGINX Ingress. Built and tested on Minikube.
+Small lab for getting hands-on with Kubernetes on Minikube: a Flask app (3 replicas) that counts visits in Redis. Redis stores its data on a PVC, and traffic comes in through the NGINX ingress.
+
+The app itself isn't the point. I wanted something with a stateful piece and a stateless piece so I could break things and see how Kubernetes reacts.
 
 ![ci](https://github.com/sukeshavula/k8s-multi-container-app/actions/workflows/ci.yml/badge.svg)
 
-> I'm learning Kubernetes hands-on. This repo is my lab: the manifests, plus notes from deliberately breaking things and fixing them.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  user([Browser<br/>visits.local]) --> ing[Ingress<br/>ingress-nginx]
-  subgraph ns["namespace: visits"]
-    ing --> svc[Service web :80]
-    svc --> p1[web pod]
-    svc --> p2[web pod]
-    svc --> p3[web pod]
-    p1 & p2 & p3 --> rsvc[Service redis :6379]
-    rsvc --> r[redis pod<br/>appendonly on]
-    r --> pvc[(PVC redis-data 1Gi)]
-  end
+```
+app/                    Flask + gunicorn, non-root image
+k8s/00-namespace.yaml
+k8s/10-redis.yaml       PVC + Redis (appendonly) + Service
+k8s/20-web.yaml         ConfigMap, Deployment (probes, limits), Service, Ingress
 ```
 
-## What's in it
-
-| File | What it does |
-|---|---|
-| `app/` | Flask app served by gunicorn, running as a non-root user. `/` counts visits, `/healthz` is the liveness check, `/readyz` checks Redis |
-| `k8s/10-redis.yaml` | Redis with append-only persistence on a PVC. `Recreate` strategy, because a ReadWriteOnce volume can't attach to two pods |
-| `k8s/20-web.yaml` | ConfigMap, a 3-replica Deployment with probes, resource limits and zero-downtime rolling updates, a Service and an Ingress |
-| `.github/workflows/ci.yml` | Validates the manifests with kubeconform, builds the image and smoke-tests it |
-
-## Run it on Minikube
+## Run it
 
 ```bash
 minikube start
 minikube addons enable ingress
-
-# Build the image straight into Minikube (no registry needed)
-minikube image build -t visits-web:1.0 app/
+minikube image build -t visits-web:1.0 app/     # builds straight into minikube, no registry
 
 kubectl apply -f k8s/
-kubectl -n visits get pods -w          # wait until everything is Running and READY
+kubectl -n visits get pods -w
 
-# Point visits.local at Minikube
 echo "$(minikube ip) visits.local" | sudo tee -a /etc/hosts
 curl http://visits.local/
 ```
 
-On Windows or macOS with the Docker driver, run `minikube tunnel` in a separate terminal and use `127.0.0.1 visits.local` in your hosts file instead.
+On Windows with the Docker driver, `minikube ip` isn't reachable. Run `minikube tunnel` and map `127.0.0.1 visits.local` in `C:\Windows\System32\drivers\etc\hosts` instead.
 
-Hit it a few times: `visits` goes up and `pod` changes as the Service spreads requests across the replicas.
+## Things I'm testing
 
-## Failure experiments
-
-Each one is something I ran to see how Kubernetes behaves, not just to read about it.
-
-**1. Does data survive the database pod dying?**
+**Does the count survive Redis being killed?**
 ```bash
-curl -s http://visits.local/ | grep visits        # note the count
 kubectl -n visits delete pod -l app=redis
-kubectl -n visits get pods -w                     # new redis pod starts
-curl -s http://visits.local/ | grep visits        # count continues, doesn't reset
+curl -s http://visits.local/
 ```
-*Why:* the PVC outlives the pod, and `--appendonly yes` makes Redis replay its write log on startup.
+It should, because the PVC outlives the pod and appendonly replays the log on startup.
 
-**2. What does readiness actually do?**
+**What readiness actually does**
 ```bash
 kubectl -n visits scale deploy redis --replicas=0
-kubectl -n visits get pods                        # web pods go 0/1 READY
-curl -i http://visits.local/                      # 503 from the Ingress: no ready endpoints
+kubectl -n visits get pods     # web pods go 0/1
+curl -i http://visits.local/   # 503, no ready endpoints
 kubectl -n visits scale deploy redis --replicas=1
 ```
-*Why:* `/readyz` fails without Redis, so Kubernetes takes the web pods out of the Service. Because liveness only checks the process, the pods are **not** restarted.
+`/readyz` fails without Redis, so the pods drop out of the Service. Liveness only checks `/healthz`, so they don't get restarted. That's why the two probes are separate.
 
-**3. Debugging a broken Ingress.** Change the Ingress backend service name to `web-typo` and apply it.
-```bash
-kubectl -n visits describe ingress web            # shows the backend it can't resolve
-kubectl -n ingress-nginx logs deploy/ingress-nginx-controller | tail
-```
+**Broken ingress:** point the ingress backend at a service that doesn't exist, then look at `kubectl describe ingress` and the controller logs.
 
-**4. Zero-downtime rollout.** Change `GREETING` in the ConfigMap, then run `kubectl -n visits rollout restart deploy/web` while a loop keeps calling `curl`. With `maxUnavailable: 0`, no request should fail.
+**Rollout with no dropped requests:** `kubectl rollout restart deploy/web` with a curl loop running. `maxUnavailable: 0` should mean no failures.
 
-## Lessons learned
+Also: `Recreate` on the Redis deployment is intentional. The PVC is ReadWriteOnce, so a rolling update would leave the new pod stuck waiting for the volume.
 
-*Filled in after running the experiments above.*
+## Notes
 
-- …
+Results of the tests above get written up here as I run them.
 
-## Next steps
+## TODO
 
-- HorizontalPodAutoscaler on CPU (needs `minikube addons enable metrics-server`)
-- Package it as a Helm chart
-- Run it on EKS with an ALB Ingress Controller and EBS-backed volumes
+- [ ] HPA on CPU (needs `minikube addons enable metrics-server`)
+- [ ] Turn it into a Helm chart
+- [ ] Try it on EKS with the AWS Load Balancer Controller and EBS volumes
